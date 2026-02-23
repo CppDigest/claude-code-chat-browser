@@ -1,0 +1,99 @@
+"""OS-aware detection of Claude Code session storage path."""
+
+import os
+import platform
+
+
+def get_claude_projects_dir() -> str:
+    """Return the path to ~/.claude/projects/ for the current OS."""
+    system = platform.system()
+    if system == "Windows":
+        home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    else:
+        home = os.path.expanduser("~")
+    return os.path.join(home, ".claude", "projects")
+
+
+def list_projects(base_dir: str | None = None) -> list[dict]:
+    """List all projects that have JSONL session files."""
+    base = base_dir or get_claude_projects_dir()
+    if not os.path.isdir(base):
+        return []
+
+    projects = []
+    for name in sorted(os.listdir(base)):
+        project_dir = os.path.join(base, name)
+        if not os.path.isdir(project_dir):
+            continue
+        jsonl_files = [
+            f for f in os.listdir(project_dir)
+            if f.endswith(".jsonl") and not f.startswith(".")
+        ]
+        if jsonl_files:
+            latest_mtime = max(
+                os.path.getmtime(os.path.join(project_dir, jf))
+                for jf in jsonl_files
+            )
+            from datetime import datetime, timezone
+            last_modified = datetime.fromtimestamp(
+                latest_mtime, tz=timezone.utc
+            ).isoformat()
+            # Read cwd from sessions to get the real project path
+            display_name = None
+            for jf in jsonl_files:
+                display_name = _get_display_name(
+                    os.path.join(project_dir, jf), None
+                )
+                if display_name:
+                    break
+            if not display_name:
+                display_name = name
+            projects.append({
+                "name": name,
+                "path": project_dir,
+                "display_name": display_name,
+                "session_count": len(jsonl_files),
+                "last_modified": last_modified,
+            })
+    return projects
+
+
+def _get_display_name(jsonl_path: str, fallback: str) -> str:
+    """Read the cwd from the first user entry in a JSONL file to get the real path."""
+    import json
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                cwd = entry.get("cwd")
+                if cwd:
+                    # Normalize: replace backslashes, strip trailing slash
+                    cwd = cwd.replace("\\", "/").rstrip("/")
+                    return cwd
+    except Exception:
+        pass
+    return fallback
+
+
+def list_sessions(project_dir: str) -> list[dict]:
+    """List all JSONL session files in a project directory."""
+    sessions = []
+    if not os.path.isdir(project_dir):
+        return sessions
+
+    for fname in sorted(os.listdir(project_dir)):
+        if not fname.endswith(".jsonl"):
+            continue
+        fpath = os.path.join(project_dir, fname)
+        session_id = fname.replace(".jsonl", "")
+        stat = os.stat(fpath)
+        sessions.append({
+            "id": session_id,
+            "path": fpath,
+            "size_bytes": stat.st_size,
+            "modified": stat.st_mtime,
+        })
+    return sessions
