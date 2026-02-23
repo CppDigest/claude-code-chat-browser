@@ -1,4 +1,4 @@
-"""API endpoint for full-text search across all sessions."""
+"""Search endpoint. Brute-force substring match across all sessions."""
 
 import os
 

@@ -1,4 +1,5 @@
-"""Parse Claude Code JSONL session files into structured conversation data."""
+"""Reads Claude Code .jsonl session files and turns them into dicts we can
+actually work with -- messages, tool calls, token counts, file activity, etc."""
 
 import json
 import os
@@ -6,11 +7,9 @@ from datetime import datetime
 
 
 def parse_session(filepath: str) -> dict:
-    """Parse a JSONL session file and return structured conversation data.
-
-    Returns a dict with:
-        session_id, project, messages[], metadata{}
-    """
+    """Main entry point. Reads every line from a .jsonl file and builds up
+    a session dict with messages, metadata (tokens, models, tool counts),
+    and file/command activity."""
     session_id = os.path.basename(filepath).replace(".jsonl", "")
     messages = []
     metadata = {
@@ -29,6 +28,28 @@ def parse_session(filepath: str) -> dict:
         "git_branch": None,
         "permission_mode": None,
         "compactions": 0,
+        # Extended token accounting
+        "total_ephemeral_5m_tokens": 0,
+        "total_ephemeral_1h_tokens": 0,
+        "service_tiers": set(),
+        # Timing
+        "session_wall_time_seconds": None,
+        # Compaction details
+        "compact_boundaries": [],
+        # Error tracking
+        "api_errors": 0,
+        # File activity (from tool_use inputs)
+        "files_read": set(),
+        "files_written": set(),
+        "files_created": set(),
+        "bash_commands": [],
+        "web_fetches": [],
+        # Sidechain tracking
+        "sidechain_messages": 0,
+        # Stop reasons
+        "stop_reasons": {},
+        # Entry type counts
+        "entry_counts": {},
     }
 
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -54,14 +75,45 @@ def parse_session(filepath: str) -> dict:
                     metadata["first_timestamp"] = ts
                 metadata["last_timestamp"] = ts
 
+            # Count entry types
+            if entry_type:
+                metadata["entry_counts"][entry_type] = (
+                    metadata["entry_counts"].get(entry_type, 0) + 1
+                )
+
+            # Track sidechain
+            if entry.get("isSidechain"):
+                metadata["sidechain_messages"] += 1
+
             if entry_type == "user":
                 _process_user(entry, messages, metadata)
             elif entry_type == "assistant":
                 _process_assistant(entry, messages, metadata)
             elif entry_type == "system":
                 _process_system(entry, messages, metadata)
+            elif entry_type == "progress":
+                _process_progress(entry, messages, metadata)
 
     metadata["models_used"] = sorted(metadata["models_used"])
+    metadata["service_tiers"] = sorted(metadata["service_tiers"])
+    metadata["files_read"] = sorted(metadata["files_read"])
+    metadata["files_written"] = sorted(metadata["files_written"])
+    metadata["files_created"] = sorted(metadata["files_created"])
+
+    # Compute wall clock time
+    if metadata["first_timestamp"] and metadata["last_timestamp"]:
+        try:
+            t0 = datetime.fromisoformat(
+                metadata["first_timestamp"].replace("Z", "+00:00")
+            )
+            t1 = datetime.fromisoformat(
+                metadata["last_timestamp"].replace("Z", "+00:00")
+            )
+            metadata["session_wall_time_seconds"] = max(
+                0, (t1 - t0).total_seconds()
+            )
+        except (ValueError, AttributeError):
+            pass
 
     title = _infer_title(messages)
 
@@ -74,7 +126,8 @@ def parse_session(filepath: str) -> dict:
 
 
 def _process_user(entry: dict, messages: list, metadata: dict):
-    """Process a user-type entry."""
+    """Pull out text, tool results, and session-level metadata (cwd, version, etc.)
+    from a user entry."""
     if metadata["version"] is None:
         metadata["version"] = entry.get("version")
     if metadata["cwd"] is None:
@@ -88,6 +141,7 @@ def _process_user(entry: dict, messages: list, metadata: dict):
     text = _extract_text(msg.get("content", []))
 
     tool_result = entry.get("toolUseResult")
+    tool_result_parsed = _parse_tool_result(tool_result, entry.get("slug"))
 
     messages.append({
         "role": "user",
@@ -97,22 +151,52 @@ def _process_user(entry: dict, messages: list, metadata: dict):
         "text": text,
         "is_sidechain": entry.get("isSidechain", False),
         "tool_result": tool_result,
+        "tool_result_parsed": tool_result_parsed,
         "slug": entry.get("slug"),
     })
 
 
 def _process_assistant(entry: dict, messages: list, metadata: dict):
-    """Process an assistant-type entry."""
+    """Handle assistant responses -- splits content into text, thinking blocks,
+    and tool_use calls, and accumulates token/model/tool stats."""
     msg = entry.get("message", {})
     model = msg.get("model", "")
     if model:
         metadata["models_used"].add(model)
 
+    # API error tracking
+    if entry.get("isApiErrorMessage"):
+        metadata["api_errors"] += 1
+
     usage = msg.get("usage", {})
     metadata["total_input_tokens"] += usage.get("input_tokens", 0)
     metadata["total_output_tokens"] += usage.get("output_tokens", 0)
     metadata["total_cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
-    metadata["total_cache_creation_tokens"] += usage.get("cache_creation_input_tokens", 0)
+    metadata["total_cache_creation_tokens"] += usage.get(
+        "cache_creation_input_tokens", 0
+    )
+
+    # Extended cache metrics
+    cache_creation = usage.get("cache_creation", {})
+    if isinstance(cache_creation, dict):
+        metadata["total_ephemeral_5m_tokens"] += cache_creation.get(
+            "ephemeral_5m_input_tokens", 0
+        )
+        metadata["total_ephemeral_1h_tokens"] += cache_creation.get(
+            "ephemeral_1h_input_tokens", 0
+        )
+
+    # Service tier
+    tier = usage.get("service_tier")
+    if tier:
+        metadata["service_tiers"].add(tier)
+
+    # Stop reason tracking
+    stop_reason = msg.get("stop_reason", "")
+    if stop_reason:
+        metadata["stop_reasons"][stop_reason] = (
+            metadata["stop_reasons"].get(stop_reason, 0) + 1
+        )
 
     content_parts = _normalize_content(msg.get("content", []))
     text_parts = []
@@ -127,6 +211,7 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
             thinking_parts.append(part.get("thinking", ""))
         elif ptype == "tool_use":
             tool_name = part.get("name", "unknown")
+            tool_input = part.get("input", {})
             metadata["total_tool_calls"] += 1
             metadata["tool_call_counts"][tool_name] = (
                 metadata["tool_call_counts"].get(tool_name, 0) + 1
@@ -134,8 +219,10 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
             tool_uses.append({
                 "id": part.get("id"),
                 "name": tool_name,
-                "input": part.get("input", {}),
+                "input": tool_input,
             })
+            # Track file activity from tool inputs
+            _track_file_activity(tool_name, tool_input, metadata)
 
     messages.append({
         "role": "assistant",
@@ -143,25 +230,35 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
         "parent_uuid": entry.get("parentUuid"),
         "timestamp": entry.get("timestamp"),
         "model": model,
-        "stop_reason": msg.get("stop_reason"),
+        "stop_reason": stop_reason,
         "text": "\n".join(text_parts),
         "thinking": "\n\n".join(thinking_parts) if thinking_parts else None,
         "tool_uses": tool_uses if tool_uses else None,
         "is_sidechain": entry.get("isSidechain", False),
+        "is_api_error": entry.get("isApiErrorMessage", False),
         "usage": {
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "cache_read": usage.get("cache_read_input_tokens", 0),
             "cache_creation": usage.get("cache_creation_input_tokens", 0),
+            "service_tier": usage.get("service_tier"),
         },
     })
 
 
 def _process_system(entry: dict, messages: list, metadata: dict):
-    """Process a system-type entry."""
+    """Handle system entries (mostly compact_boundary markers from context
+    compaction)."""
     subtype = entry.get("subtype", "")
     if subtype == "compact_boundary":
         metadata["compactions"] += 1
+        compact_meta = entry.get("compactMetadata")
+        if isinstance(compact_meta, dict):
+            metadata["compact_boundaries"].append({
+                "timestamp": entry.get("timestamp"),
+                "trigger": compact_meta.get("trigger"),
+                "pre_tokens": compact_meta.get("preTokens"),
+            })
 
     messages.append({
         "role": "system",
@@ -174,8 +271,138 @@ def _process_system(entry: dict, messages: list, metadata: dict):
     })
 
 
+def _process_progress(entry: dict, messages: list, metadata: dict):
+    """Capture progress entries -- streaming bash output, hook results, etc.
+    These are noisy so we mostly just store them for the JSON export."""
+    data = entry.get("data", {})
+    progress_type = data.get("type", "")
+
+    messages.append({
+        "role": "progress",
+        "uuid": entry.get("uuid"),
+        "parent_uuid": entry.get("parentUuid"),
+        "timestamp": entry.get("timestamp"),
+        "progress_type": progress_type,
+        "data": data,
+        "tool_use_id": entry.get("toolUseID"),
+        "parent_tool_use_id": entry.get("parentToolUseID"),
+        "is_sidechain": entry.get("isSidechain", False),
+    })
+
+
+def _track_file_activity(tool_name: str, tool_input: dict, metadata: dict):
+    """Look at what each tool call did and record which files got touched,
+    what commands got run, what URLs got fetched."""
+    fp = tool_input.get("file_path", "")
+    if tool_name == "Read" and fp:
+        metadata["files_read"].add(fp)
+    elif tool_name == "Write" and fp:
+        metadata["files_created"].add(fp)
+    elif tool_name == "Edit" and fp:
+        metadata["files_written"].add(fp)
+    elif tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        if cmd:
+            metadata["bash_commands"].append(cmd)
+    elif tool_name in ("WebFetch", "WebSearch"):
+        url_or_query = tool_input.get("url") or tool_input.get("query", "")
+        if url_or_query:
+            metadata["web_fetches"].append(url_or_query)
+
+
+def _parse_tool_result(tool_result, slug: str = None) -> dict | None:
+    """Figure out what kind of tool result this is (bash, file edit, glob, etc.)
+    by looking at which keys are present, since the JSONL doesn't always tag them."""
+    if not isinstance(tool_result, dict):
+        return None
+
+    result = {"slug": slug}
+
+    # Bash results: have stdout/stderr/interrupted
+    if "stdout" in tool_result or "stderr" in tool_result:
+        result["result_type"] = "bash"
+        result["stdout"] = tool_result.get("stdout", "")
+        result["stderr"] = tool_result.get("stderr", "")
+        result["exit_code"] = tool_result.get("exitCode")
+        result["interrupted"] = tool_result.get("interrupted", False)
+        result["is_error"] = tool_result.get("is_error", False)
+        result["return_code_interpretation"] = tool_result.get(
+            "returnCodeInterpretation"
+        )
+        return result
+
+    # File edit results: have filePath + structuredPatch or oldString/newString
+    if "structuredPatch" in tool_result or (
+        "filePath" in tool_result and "newString" in tool_result
+    ):
+        result["result_type"] = "file_edit"
+        result["file_path"] = tool_result.get("filePath", "")
+        result["replace_all"] = tool_result.get("replaceAll", False)
+        return result
+
+    # File create/write results: have filePath + content but no patch
+    if "filePath" in tool_result and "content" in tool_result:
+        result["result_type"] = "file_write"
+        result["file_path"] = tool_result.get("filePath", "")
+        return result
+
+    # Glob results: have filenames array
+    if "filenames" in tool_result and isinstance(
+        tool_result.get("filenames"), list
+    ):
+        result["result_type"] = "glob"
+        result["num_files"] = tool_result.get("numFiles", len(tool_result["filenames"]))
+        result["truncated"] = tool_result.get("truncated", False)
+        result["duration_ms"] = tool_result.get("durationMs")
+        return result
+
+    # Grep results: have mode + numFiles/numLines
+    if "mode" in tool_result and "numFiles" in tool_result:
+        result["result_type"] = "grep"
+        result["mode"] = tool_result.get("mode")
+        result["num_files"] = tool_result.get("numFiles", 0)
+        result["num_lines"] = tool_result.get("numLines", 0)
+        result["duration_ms"] = tool_result.get("durationMs")
+        return result
+
+    # Read result: have file dict with content
+    if "file" in tool_result and isinstance(tool_result["file"], dict):
+        result["result_type"] = "file_read"
+        result["file_path"] = tool_result["file"].get("filePath", "")
+        result["num_lines"] = tool_result["file"].get("numLines")
+        return result
+
+    # WebSearch results
+    if "query" in tool_result and "results" in tool_result:
+        result["result_type"] = "web_search"
+        result["query"] = tool_result.get("query", "")
+        result["result_count"] = len(tool_result.get("results", []))
+        result["duration_seconds"] = tool_result.get("durationSeconds")
+        return result
+
+    # WebFetch results
+    if "url" in tool_result and "code" in tool_result:
+        result["result_type"] = "web_fetch"
+        result["url"] = tool_result.get("url", "")
+        result["status_code"] = tool_result.get("code")
+        result["duration_ms"] = tool_result.get("durationMs")
+        return result
+
+    # Task results
+    if "task_id" in tool_result or "message" in tool_result:
+        result["result_type"] = "task"
+        result["task_id"] = tool_result.get("task_id")
+        result["task_type"] = tool_result.get("task_type")
+        return result
+
+    # Generic fallback
+    result["result_type"] = "unknown"
+    return result
+
+
 def _normalize_content(content) -> list:
-    """Normalize content to a list of dicts. Handles string or list formats."""
+    """Content can be a plain string, a list of strings, or a list of typed
+    blocks. Normalize everything into [{type, text}, ...] form."""
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     if isinstance(content, list):
@@ -190,7 +417,7 @@ def _normalize_content(content) -> list:
 
 
 def _extract_text(content_parts) -> str:
-    """Extract plain text from message content parts."""
+    """Grab just the text blocks out of a content array, ignore tool_use/thinking."""
     parts = _normalize_content(content_parts)
     texts = []
     for part in parts:
@@ -200,8 +427,7 @@ def _extract_text(content_parts) -> str:
 
 
 def _infer_title(messages: list) -> str:
-    """Infer a session title from the first user message."""
-    import re
+    """Use the first line of the first real user message as the session title."""
     for msg in messages:
         if msg["role"] == "user" and msg.get("text"):
             text = _strip_system_tags(msg["text"]).strip()
@@ -212,7 +438,8 @@ def _infer_title(messages: list) -> str:
 
 
 def _strip_system_tags(text: str) -> str:
-    """Remove Claude Code internal XML tags from text."""
+    """Strip out the internal XML tags Claude Code injects (system-reminder,
+    ide_opened_file, etc.) so exported text is clean."""
     import re
     # Remove block tags and their content
     for tag in (

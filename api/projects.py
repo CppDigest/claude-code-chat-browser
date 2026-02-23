@@ -1,4 +1,4 @@
-"""API endpoints for listing projects."""
+"""Project listing endpoints."""
 
 from flask import Blueprint, current_app, jsonify
 

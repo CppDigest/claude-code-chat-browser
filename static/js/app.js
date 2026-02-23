@@ -54,26 +54,6 @@ async function showProjects() {
             return;
         }
 
-        let html = `
-            <div class="page-header">
-                <div>
-                    <h1>Projects</h1>
-                    <p class="text-muted text-sm">Browse your Claude Code conversations by project.</p>
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-outline btn-sm" onclick="bulkExport()">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        Export all
-                    </button>
-                </div>
-            </div>`;
-
-        html += `<div class="card"><div class="card-header">
-            <h2>Projects with Sessions</h2>
-            <p class="text-muted text-sm">${projects.length} project${projects.length !== 1 ? 's' : ''} with chat history</p>
-        </div><div class="card-body"><table class="table">
-            <thead><tr><th>Project</th><th>Sessions</th><th>Last Modified</th></tr></thead><tbody>`;
-
         // Cache display names
         for (const p of projects) {
             projectDisplayNames[p.name] = p.display_name || p.name;
@@ -82,15 +62,45 @@ async function showProjects() {
         // Sort by last modified desc
         projects.sort((a, b) => (b.last_modified || '').localeCompare(a.last_modified || ''));
 
-        for (const p of projects) {
-            html += `<tr>
-                <td><a href="#project/${encodeURIComponent(p.name)}">${esc(p.display_name || p.name)}</a></td>
-                <td><span class="text-success">${p.session_count} session${p.session_count !== 1 ? 's' : ''}</span></td>
-                <td>${p.last_modified ? formatTs(p.last_modified) : '—'}</td>
-            </tr>`;
-        }
+        // Aggregate stats for hero
+        const totalSessions = projects.reduce((s, p) => s + (p.session_count || 0), 0);
 
-        html += '</tbody></table></div></div>';
+        // Hero section
+        let html = `<div class="hero">
+            <h1>Claude Code Sessions</h1>
+            <p>Browse and export your conversation history</p>
+            <div class="hero-stats">
+                <div class="hero-stat">
+                    <div class="value">${projects.length}</div>
+                    <div class="label">Projects</div>
+                </div>
+                <div class="hero-stat">
+                    <div class="value">${totalSessions}</div>
+                    <div class="label">Sessions</div>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="bulkExport()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export All Sessions
+            </button>
+        </div>`;
+
+        // Project cards grid
+        html += '<div class="projects-grid">';
+        for (const p of projects) {
+            const displayName = p.display_name || p.name;
+            const modified = p.last_modified ? formatTs(p.last_modified) : '';
+            const count = p.session_count || 0;
+            html += `<a class="project-card" href="#project/${encodeURIComponent(p.name)}">
+                <div class="card-title">${esc(displayName)}</div>
+                <div class="card-footer">
+                    <span class="session-badge">${count} session${count !== 1 ? 's' : ''}</span>
+                    <span class="card-date">${esc(modified)}</span>
+                </div>
+            </a>`;
+        }
+        html += '</div>';
+
         content.innerHTML = html;
     } catch (e) {
         content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
@@ -288,8 +298,8 @@ function renderToolUse(tool) {
         if (inp.content) html += `<pre><code>${esc(truncate(inp.content, 500))}</code></pre>`;
     } else if (name === 'Edit') {
         html += `<div>File: <code>${esc(inp.file_path || '')}</code></div>`;
-        if (inp.old_string) html += `<pre style="border-left:3px solid #ef5350"><code>${esc(truncate(inp.old_string, 300))}</code></pre>`;
-        if (inp.new_string) html += `<pre style="border-left:3px solid #66bb6a"><code>${esc(truncate(inp.new_string, 300))}</code></pre>`;
+        if (inp.old_string) html += `<pre style="border-left:3px solid var(--danger)"><code>${esc(truncate(inp.old_string, 300))}</code></pre>`;
+        if (inp.new_string) html += `<pre style="border-left:3px solid var(--success)"><code>${esc(truncate(inp.new_string, 300))}</code></pre>`;
     } else if (name === 'Glob') {
         html += `<div>Pattern: <code>${esc(inp.pattern || '')}</code></div>`;
     } else if (name === 'Grep') {

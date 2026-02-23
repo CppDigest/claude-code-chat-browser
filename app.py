@@ -1,4 +1,4 @@
-"""Flask web application for browsing Claude Code chat history."""
+"""Flask app that serves the web GUI for browsing sessions."""
 
 import os
 
