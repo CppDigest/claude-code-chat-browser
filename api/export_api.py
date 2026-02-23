@@ -34,7 +34,7 @@ def bulk_export():
                         continue
                     stats = compute_stats(session)
                     md = session_to_markdown(session, stats)
-                    title_slug = _slugify(session["title"])[:60]
+                    title_slug = _slugify(session["title"])[:60] or "session"
                     short_id = sess_info["id"][:8]
                     proj_slug = _slugify(project["name"])
                     rel_path = f"{proj_slug}/{title_slug}__{short_id}.md"
@@ -82,7 +82,7 @@ def export_session(project_name, session_id):
     fmt = request.args.get("format", "md")
     session = parse_session(filepath)
     stats = compute_stats(session)
-    title_slug = _slugify(session["title"])[:60]
+    title_slug = _slugify(session["title"])[:60] or "session"
 
     if fmt == "json":
         content = session_to_json(session, stats)
