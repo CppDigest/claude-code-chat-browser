@@ -5,6 +5,16 @@ import os
 import platform
 
 
+def safe_join(base: str, *parts: str) -> str:
+    """Join path components and verify the result stays under base.
+    Raises ValueError if the resolved path escapes the base directory."""
+    joined = os.path.realpath(os.path.join(base, *parts))
+    base_resolved = os.path.realpath(base)
+    if not joined.startswith(base_resolved + os.sep) and joined != base_resolved:
+        raise ValueError(f"Path escapes base directory: {joined}")
+    return joined
+
+
 def get_claude_projects_dir() -> str:
     """~/.claude/projects/ -- handles Windows USERPROFILE vs Unix HOME."""
     system = platform.system()

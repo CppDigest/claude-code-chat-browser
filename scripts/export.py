@@ -99,7 +99,8 @@ def _list_sessions(project: dict):
             tokens = meta["total_input_tokens"] + meta["total_output_tokens"]
             tools = meta["total_tool_calls"]
             print(f"  {ts:<12} {title:<50} {sid:>10} {tokens:>10,} {tools:>6}")
-        except Exception:
+        except Exception as e:
+            print(f"  Warning: failed to parse {s['id'][:10]}: {e}", file=sys.stderr)
             continue
 
 
@@ -238,7 +239,8 @@ def _aggregate_stats(base_dir: str, project_filter: str, fmt: str):
                 if cost is not None:
                     totals["total_cost"] += cost
                     totals["has_cost"] = True
-            except Exception:
+            except Exception as e:
+                print(f"  Warning: failed to parse {s['id'][:10]} in {project['name']}: {e}", file=sys.stderr)
                 continue
 
     if fmt == "json":
@@ -512,11 +514,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _find_session(session_id: str, base_dir: str) -> str | None:
-    """Scan all projects for a session matching this UUID (or prefix)."""
+    """Scan all projects for a session matching this UUID (or prefix).
+    Fails if the prefix matches more than one session."""
+    matches = []
     for project in list_projects(base_dir):
         for s in list_sessions(project["path"]):
-            if s["id"] == session_id or s["id"].startswith(session_id):
+            if s["id"] == session_id:
                 return s["path"]
+            if s["id"].startswith(session_id):
+                matches.append(s)
+    if len(matches) == 1:
+        return matches[0]["path"]
+    if len(matches) > 1:
+        _die(
+            f"Ambiguous prefix '{session_id}' matches {len(matches)} sessions:\n"
+            + "\n".join(f"  {m['id']}" for m in matches)
+        )
     return None
 
 

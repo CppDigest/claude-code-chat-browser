@@ -49,7 +49,8 @@ def bulk_export():
                         "cost_estimate_usd": stats.get("cost_estimate_usd"),
                     })
                     count += 1
-                except Exception:
+                except Exception as e:
+                    current_app.logger.warning("Failed to export %s: %s", sess_info["id"][:10], e)
                     continue
         if manifest:
             manifest_str = "\n".join(json.dumps(e, default=str) for e in manifest)
@@ -68,8 +69,12 @@ def bulk_export():
 @export_bp.route("/api/export/session/<path:project_name>/<session_id>")
 def export_session(project_name, session_id):
     import os
+    from utils.session_path import safe_join
     base = current_app.config.get("CLAUDE_PROJECTS_DIR") or get_claude_projects_dir()
-    filepath = os.path.join(base, project_name, f"{session_id}.jsonl")
+    try:
+        filepath = safe_join(base, project_name, f"{session_id}.jsonl")
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 400
 
     if not os.path.isfile(filepath):
         return jsonify({"error": "Session not found"}), 404

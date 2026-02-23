@@ -2,7 +2,7 @@
 
 from flask import Blueprint, current_app, jsonify
 
-from utils.session_path import get_claude_projects_dir, list_projects, list_sessions
+from utils.session_path import get_claude_projects_dir, list_projects, list_sessions, safe_join
 
 projects_bp = Blueprint("projects", __name__)
 
@@ -17,8 +17,10 @@ def get_projects():
 @projects_bp.route("/api/projects/<path:project_name>/sessions")
 def get_project_sessions(project_name):
     base = current_app.config.get("CLAUDE_PROJECTS_DIR") or get_claude_projects_dir()
-    import os
-    project_dir = os.path.join(base, project_name)
+    try:
+        project_dir = safe_join(base, project_name)
+    except ValueError:
+        return jsonify([]), 400
     sessions = list_sessions(project_dir)
     # Add summary preview for each session
     from utils.jsonl_parser import parse_session
@@ -39,6 +41,6 @@ def get_project_sessions(project_name):
                 "first_timestamp": meta["first_timestamp"],
                 "last_timestamp": meta["last_timestamp"],
             })
-        except Exception:
-            result.append({**s, "title": "Error parsing session", "error": True})
+        except Exception as e:
+            result.append({**s, "title": "Error parsing session", "error": True, "error_detail": str(e)})
     return jsonify(result)

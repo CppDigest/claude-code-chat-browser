@@ -92,7 +92,7 @@ def parse_session(filepath: str) -> dict:
             elif entry_type == "system":
                 _process_system(entry, messages, metadata)
             elif entry_type == "progress":
-                _process_progress(entry, messages, metadata)
+                _process_progress(entry, messages)
 
     metadata["models_used"] = sorted(metadata["models_used"])
     metadata["service_tiers"] = sorted(metadata["service_tiers"])
@@ -222,7 +222,8 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
                 "input": tool_input,
             })
             # Track file activity from tool inputs
-            _track_file_activity(tool_name, tool_input, metadata)
+            safe_input = tool_input if isinstance(tool_input, dict) else {}
+            _track_file_activity(tool_name, safe_input, metadata)
 
     messages.append({
         "role": "assistant",
@@ -271,7 +272,7 @@ def _process_system(entry: dict, messages: list, metadata: dict):
     })
 
 
-def _process_progress(entry: dict, messages: list, metadata: dict):
+def _process_progress(entry: dict, messages: list):
     """Capture progress entries -- streaming bash output, hook results, etc.
     These are noisy so we mostly just store them for the JSON export."""
     data = entry.get("data", {})

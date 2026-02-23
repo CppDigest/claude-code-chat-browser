@@ -330,8 +330,6 @@ def _render_tool_result(parsed: dict) -> str:
         stdout = parsed.get("stdout", "")
         stderr = parsed.get("stderr", "")
         exit_code = parsed.get("exit_code")
-        interp = parsed.get("return_code_interpretation", "")
-
         status = ""
         if parsed.get("interrupted"):
             status = " (interrupted)"
@@ -381,7 +379,7 @@ def _render_tool_result(parsed: dict) -> str:
         lines.append(f"\n**Fetch:** `{url}` -- status {code}")
 
     elif rt == "task":
-        lines.append(f"\n**Task completed**")
+        lines.append("\n**Task completed**")
 
     return "\n".join(lines)
 
