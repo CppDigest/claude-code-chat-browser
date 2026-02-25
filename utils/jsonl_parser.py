@@ -138,10 +138,20 @@ def _process_user(entry: dict, messages: list, metadata: dict):
         metadata["permission_mode"] = entry.get("permissionMode")
 
     msg = entry.get("message", {})
-    text = _extract_text(msg.get("content", []))
+    content = msg.get("content", [])
+    text = _extract_text(content)
+    images = _extract_images(content)
 
     tool_result = entry.get("toolUseResult")
     tool_result_parsed = _parse_tool_result(tool_result, entry.get("slug"))
+
+    # Also extract images from toolUseResult content (e.g., Read tool on image files)
+    if isinstance(tool_result, dict) and "content" in tool_result:
+        tr_content = tool_result["content"]
+        if isinstance(tr_content, list):
+            tr_images = _extract_images(tr_content)
+            if tr_images:
+                images = (images or []) + tr_images
 
     messages.append({
         "role": "user",
@@ -149,6 +159,7 @@ def _process_user(entry: dict, messages: list, metadata: dict):
         "parent_uuid": entry.get("parentUuid"),
         "timestamp": entry.get("timestamp"),
         "text": text,
+        "images": images if images else None,
         "is_sidechain": entry.get("isSidechain", False),
         "tool_result": tool_result,
         "tool_result_parsed": tool_result_parsed,
@@ -161,7 +172,7 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
     and tool_use calls, and accumulates token/model/tool stats."""
     msg = entry.get("message", {})
     model = msg.get("model", "")
-    if model:
+    if model and model != "<synthetic>":
         metadata["models_used"].add(model)
 
     # API error tracking
@@ -389,16 +400,133 @@ def _parse_tool_result(tool_result, slug: str = None) -> dict | None:
         result["duration_ms"] = tool_result.get("durationMs")
         return result
 
-    # Task results
+    # Task results -- multiple variants
     if "task_id" in tool_result or "message" in tool_result:
         result["result_type"] = "task"
         result["task_id"] = tool_result.get("task_id")
         result["task_type"] = tool_result.get("task_type")
         return result
 
+    # Task retrieval (has nested "task" dict + retrieval_status)
+    if "retrieval_status" in tool_result and "task" in tool_result:
+        result["result_type"] = "task"
+        task_obj = tool_result["task"] if isinstance(tool_result["task"], dict) else {}
+        result["retrieval_status"] = tool_result.get("retrieval_status")
+        result["task_id"] = task_obj.get("task_id")
+        return result
+
+    # Task completed subagent (has agentId + totalDurationMs + status)
+    if "agentId" in tool_result and "totalDurationMs" in tool_result:
+        result["result_type"] = "task"
+        result["agent_id"] = tool_result.get("agentId")
+        result["status"] = tool_result.get("status")
+        result["total_duration_ms"] = tool_result.get("totalDurationMs")
+        result["total_tokens"] = tool_result.get("totalTokens")
+        result["total_tool_use_count"] = tool_result.get("totalToolUseCount")
+        return result
+
+    # Task async launched (has agentId + isAsync + status)
+    if "agentId" in tool_result and "isAsync" in tool_result:
+        result["result_type"] = "task"
+        result["agent_id"] = tool_result.get("agentId")
+        result["status"] = tool_result.get("status")
+        result["description"] = tool_result.get("description")
+        return result
+
+    # TodoWrite results (has newTodos/oldTodos)
+    if "newTodos" in tool_result or "oldTodos" in tool_result:
+        result["result_type"] = "todo_write"
+        new_todos = tool_result.get("newTodos", [])
+        result["todo_count"] = len(new_todos) if isinstance(new_todos, list) else 0
+        result["todos"] = new_todos if isinstance(new_todos, list) else []
+        return result
+
+    # AskUserQuestion results (has questions/answers)
+    if "questions" in tool_result and "answers" in tool_result:
+        result["result_type"] = "user_input"
+        result["questions"] = tool_result.get("questions", [])
+        result["answers"] = tool_result.get("answers", {})
+        return result
+
+    # Plan results (has plan + filePath)
+    if "plan" in tool_result and "filePath" in tool_result:
+        result["result_type"] = "plan"
+        result["file_path"] = tool_result.get("filePath", "")
+        return result
+
     # Generic fallback
     result["result_type"] = "unknown"
     return result
+
+
+def quick_session_info(filepath: str) -> dict:
+    """Lightweight peek at a session file -- returns title and last_timestamp
+    without fully parsing all messages.  Much faster than parse_session() for
+    large files.
+
+    Strategy: read the first ~50 lines for the title, then seek to the end of
+    the file and read the last chunk to find the last timestamp."""
+    title = None
+    first_ts = None
+    last_ts = None
+
+    # --- Pass 1: read first lines to find the title and first_timestamp ---
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        lines_read = 0
+        for line in f:
+            lines_read += 1
+            if lines_read > 80:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = entry.get("timestamp")
+            if ts:
+                if first_ts is None:
+                    first_ts = ts
+                last_ts = ts  # keep updating in case file is small
+
+            if title is None and entry.get("type") == "user":
+                msg = entry.get("message", {})
+                text = _extract_text(msg.get("content", []))
+                if text:
+                    clean = _strip_system_tags(text).strip()
+                    first_line = clean.split("\n")[0][:100]
+                    if first_line:
+                        title = first_line
+
+    # --- Pass 2: read last chunk for the last timestamp ---
+    file_size = os.path.getsize(filepath)
+    if file_size > 10000:
+        # Only bother with tail-read for non-tiny files
+        chunk_size = min(file_size, 32768)
+        with open(filepath, "rb") as f:
+            f.seek(file_size - chunk_size)
+            tail = f.read().decode("utf-8", errors="replace")
+        # Parse lines in reverse to find latest timestamp
+        for line in reversed(tail.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = entry.get("timestamp")
+            if ts:
+                last_ts = ts
+                break
+
+    return {
+        "title": title or "Untitled Session",
+        "first_timestamp": first_ts,
+        "last_timestamp": last_ts,
+    }
 
 
 def _normalize_content(content) -> list:
@@ -425,6 +553,33 @@ def _extract_text(content_parts) -> str:
         if part.get("type") == "text":
             texts.append(part.get("text", ""))
     return "\n".join(texts)
+
+
+def _extract_images(content_parts) -> list:
+    """Pull base64 image blocks out of a content array.
+    Also looks inside nested tool_result content blocks."""
+    parts = _normalize_content(content_parts)
+    images = []
+    for part in parts:
+        if part.get("type") == "image":
+            source = part.get("source", {})
+            if source.get("type") == "base64" and source.get("data"):
+                images.append({
+                    "media_type": source.get("media_type", "image/png"),
+                    "data": source["data"],
+                })
+        elif part.get("type") == "tool_result":
+            nested = part.get("content", [])
+            if isinstance(nested, list):
+                for sub in nested:
+                    if isinstance(sub, dict) and sub.get("type") == "image":
+                        source = sub.get("source", {})
+                        if source.get("type") == "base64" and source.get("data"):
+                            images.append({
+                                "media_type": source.get("media_type", "image/png"),
+                                "data": source["data"],
+                            })
+    return images
 
 
 def _infer_title(messages: list) -> str:

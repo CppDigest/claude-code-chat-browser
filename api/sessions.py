@@ -1,6 +1,7 @@
 """Session detail and stats endpoints."""
 
 import os
+import traceback
 
 from flask import Blueprint, current_app, jsonify, abort
 
@@ -17,13 +18,20 @@ def get_session(project_name, session_id):
     try:
         filepath = safe_join(base, project_name, f"{session_id}.jsonl")
     except ValueError:
-        abort(400, description="Invalid path")
+        return jsonify({"error": "Invalid path"}), 400
 
     if not os.path.isfile(filepath):
-        abort(404, description=f"Session {session_id} not found")
+        return jsonify({"error": f"Session {session_id} not found"}), 404
 
-    session = parse_session(filepath)
-    return jsonify(session)
+    try:
+        session = parse_session(filepath)
+        return jsonify(session)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[ERROR] Failed to parse session {session_id}: {e}\n{tb}")
+        return jsonify({
+            "error": f"Failed to parse session: {type(e).__name__}: {e}",
+        }), 500
 
 
 @sessions_bp.route("/api/sessions/<path:project_name>/<session_id>/stats")
@@ -32,11 +40,18 @@ def get_session_stats(project_name, session_id):
     try:
         filepath = safe_join(base, project_name, f"{session_id}.jsonl")
     except ValueError:
-        abort(400, description="Invalid path")
+        return jsonify({"error": "Invalid path"}), 400
 
     if not os.path.isfile(filepath):
-        abort(404, description=f"Session {session_id} not found")
+        return jsonify({"error": f"Session {session_id} not found"}), 404
 
-    session = parse_session(filepath)
-    stats = compute_stats(session)
-    return jsonify(stats)
+    try:
+        session = parse_session(filepath)
+        stats = compute_stats(session)
+        return jsonify(stats)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[ERROR] Failed to compute stats for {session_id}: {e}\n{tb}")
+        return jsonify({
+            "error": f"Failed to compute stats: {type(e).__name__}: {e}",
+        }), 500

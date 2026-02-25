@@ -84,7 +84,9 @@ def _get_display_name(jsonl_path: str, fallback: str) -> str:
                 if cwd:
                     # Normalize: replace backslashes, strip trailing slash
                     cwd = cwd.replace("\\", "/").rstrip("/")
-                    return cwd
+                    # Extract last folder name and capitalize first letter
+                    folder = cwd.rsplit("/", 1)[-1]
+                    return folder[:1].upper() + folder[1:] if folder else cwd
     except Exception:
         pass
     return fallback

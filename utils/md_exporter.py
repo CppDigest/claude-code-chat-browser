@@ -205,6 +205,10 @@ def _render_user(msg: dict) -> str:
     if msg.get("slug"):
         lines.append(f"_Tool response: {msg['slug']}_\n")
 
+    if msg.get("images"):
+        for img in msg["images"]:
+            lines.append(f'<img src="data:{img["media_type"]};base64,{img["data"]}" alt="User image" style="max-width:100%;max-height:600px">\n')
+
     if msg.get("text"):
         from utils.jsonl_parser import _strip_system_tags
         lines.append(_strip_system_tags(msg["text"]))
@@ -300,6 +304,8 @@ def _render_tool_use(tool: dict) -> str:
     elif name == "Task":
         lines.append(f">\n> Description: {inp.get('description', '')}")
         lines.append(f"> Agent: {inp.get('subagent_type', '')}")
+        if inp.get("prompt"):
+            lines.append(f">\n> **Prompt:**\n> ```\n> {_truncate(inp['prompt'], 500)}\n> ```")
     elif name == "TodoWrite":
         todos = inp.get("todos", [])
         for t in todos:
@@ -379,7 +385,37 @@ def _render_tool_result(parsed: dict) -> str:
         lines.append(f"\n**Fetch:** `{url}` -- status {code}")
 
     elif rt == "task":
-        lines.append("\n**Task completed**")
+        status = parsed.get("status", "completed")
+        dur = parsed.get("total_duration_ms")
+        dur_str = f" ({dur / 1000:.1f}s)" if dur else ""
+        tok_str = f", {parsed['total_tokens']:,} tokens" if parsed.get("total_tokens") else ""
+        tool_str = f", {parsed['total_tool_use_count']} tool calls" if parsed.get("total_tool_use_count") else ""
+        if parsed.get("retrieval_status"):
+            lines.append(f"\n**Task retrieval:** {parsed['retrieval_status']}")
+        elif parsed.get("description"):
+            lines.append(f"\n**Task launched:** {parsed['description']}")
+        else:
+            lines.append(f"\n**Task {status}{dur_str}{tok_str}{tool_str}**")
+
+    elif rt == "todo_write":
+        count = parsed.get("todo_count", 0)
+        lines.append(f"\n**Todos updated ({count} items):**")
+        for t in parsed.get("todos", []):
+            icon = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}.get(
+                t.get("status", ""), "[ ]"
+            )
+            lines.append(f"- {icon} {t.get('content', '')}")
+
+    elif rt == "user_input":
+        lines.append("\n**User input received:**")
+        for q in parsed.get("questions", []):
+            lines.append(f"- Q: {q.get('question', '')}")
+        for k, v in parsed.get("answers", {}).items():
+            lines.append(f"- A: {v}")
+
+    elif rt == "plan":
+        fp = parsed.get("file_path", "")
+        lines.append(f"\n**Plan:** `{fp}`")
 
     return "\n".join(lines)
 
