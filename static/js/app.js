@@ -74,14 +74,14 @@ document.addEventListener('DOMContentLoaded', () => {
     handleRoute();
     window.addEventListener('hashchange', handleRoute);
 
-    // Create sidebar overlay element for mobile
+    // Mobile sidebar overlay
     const overlay = document.createElement('div');
     overlay.className = 'sidebar-overlay';
     overlay.id = 'sidebar-overlay';
     overlay.addEventListener('click', closeSidebar);
     document.body.appendChild(overlay);
 
-    // Scroll-to-top button — listens to .main-panel or window (whichever scrolls)
+    // Scroll-to-top button
     const topBtn = document.createElement('button');
     topBtn.className = 'scroll-top-btn';
     topBtn.id = 'scroll-top-btn';
@@ -119,7 +119,27 @@ function closeSidebar() {
 
 function setHamburgerVisible(visible) {
     const btn = document.getElementById('hamburger-btn');
-    if (btn) btn.style.display = visible ? '' : 'none';
+    if (btn) btn.style.display = visible ? 'flex' : 'none';
+}
+
+function setWorkspaceMode(active) {
+    document.body.classList.toggle('workspace-mode', active);
+    const content = document.getElementById('content');
+    if (content) {
+        if (active) {
+            content.classList.remove('container');
+        } else {
+            content.classList.add('container');
+        }
+    }
+    // Switch highlight.js theme
+    const hljsLink = document.getElementById('hljs-theme');
+    if (hljsLink) {
+        const theme = localStorage.getItem('theme') || 'dark';
+        hljsLink.href = theme === 'dark'
+            ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css'
+            : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+    }
 }
 
 let _navInProgress = false;
@@ -157,76 +177,112 @@ function handleRoute() {
 async function showProjects() {
     currentProject = null;
     setHamburgerVisible(false);
+    setWorkspaceMode(false);
     if (window.location.hash && window.location.hash !== '#') {
         _navInProgress = true;
         window.location.hash = '';
         setTimeout(() => { _navInProgress = false; }, 0);
     }
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="loading">Loading projects...</div>';
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Loading projects...</p></div>';
     _loadingBar.start();
 
     try {
-        const res = await fetch('/api/projects');
-        const projects = await res.json();
+        const [projRes, stateRes] = await Promise.all([
+            fetch('/api/projects'),
+            fetch('/api/export/state').catch(() => null)
+        ]);
+        const projects = await projRes.json();
         _loadingBar.done();
 
         if (!projects.length) {
-            content.innerHTML = '<div class="empty-state">No Claude Code projects found.<br>Make sure Claude Code has been used on this machine.</div>';
+            smoothSet(content, '<div class="empty-state">No Claude Code projects found.<br>Make sure Claude Code has been used on this machine.</div>');
             return;
         }
 
-        // Cache display names
-        for (const p of projects) {
-            projectDisplayNames[p.name] = p.display_name || p.name;
-        }
-
-        // Sort by last modified desc
+        for (const p of projects) projectDisplayNames[p.name] = p.display_name || p.name;
         projects.sort((a, b) => (b.last_modified || '').localeCompare(a.last_modified || ''));
 
-        // Aggregate stats for hero
-        const totalSessions = projects.reduce((s, p) => s + (p.session_count || 0), 0);
+        // Page header with export controls
+        let lastExportHtml = '';
+        if (stateRes) {
+            try {
+                const state = await stateRes.json();
+                if (state.last_export_time) {
+                    const d = new Date(state.last_export_time);
+                    if (!isNaN(d.getTime())) {
+                        lastExportHtml = `<p class="text-muted text-sm" style="margin:0">Last export: ${d.toLocaleString()} (${state.export_count || 0} sessions)</p>`;
+                    }
+                }
+            } catch(e) {}
+        }
 
-        // Hero section
-        let html = `<div class="hero">
-            <h1>Claude Code Sessions</h1>
-            <p>Browse and export your conversation history</p>
-            <div class="hero-stats">
-                <div class="hero-stat">
-                    <div class="value">${projects.length}</div>
-                    <div class="label">Projects</div>
-                </div>
-                <div class="hero-stat">
-                    <div class="value">${totalSessions}</div>
-                    <div class="label">Sessions</div>
-                </div>
+        let html = `<div class="page-header">
+            <div>
+                <h1>Projects</h1>
+                <p class="text-muted">Browse your Claude Code conversations by project. Click on a project to view its sessions.</p>
             </div>
-            <button class="btn btn-primary" onclick="bulkExport()">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Export All Sessions
-            </button>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.25rem">
+                <div class="btn-group">
+                    <button class="btn btn-outline btn-sm" id="btn-export-all" onclick="bulkExport()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Export all
+                    </button>
+                </div>
+                ${lastExportHtml}
+            </div>
         </div>`;
 
-        // Project cards grid
-        html += '<div class="projects-grid">';
-        for (const p of projects) {
-            const displayName = p.display_name || p.name;
-            const modified = p.last_modified ? formatDate(p.last_modified) : '';
-            const count = p.session_count || 0;
-            html += `<a class="project-card" href="#project/${encodeURIComponent(p.name)}">
-                <div class="card-title">${esc(displayName)}</div>
-                <div class="card-footer">
-                    <span class="session-badge">${count} session${count !== 1 ? 's' : ''}</span>
-                    <span class="card-date">${esc(modified)}</span>
+        const withSessions = projects.filter(p => (p.session_count || 0) > 0);
+        const noSessions   = projects.filter(p => (p.session_count || 0) === 0);
+
+        if (withSessions.length) {
+            html += `<div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Projects with Sessions</h2>
+                    <p class="text-muted text-sm">${withSessions.length} project${withSessions.length !== 1 ? 's' : ''} with chat history</p>
                 </div>
-            </a>`;
+                <div class="card-body" style="padding:0">
+                    <table class="table">
+                        <thead><tr><th>Project</th><th>Sessions</th><th>Last Modified</th></tr></thead>
+                        <tbody>`;
+            for (const p of withSessions) {
+                const displayName = p.display_name || p.name;
+                const count = p.session_count || 0;
+                html += `<tr>
+                    <td><a href="#project/${encodeURIComponent(p.name)}" class="link">${esc(displayName)}</a></td>
+                    <td><span class="text-success">${count} session${count !== 1 ? 's' : ''}</span></td>
+                    <td>${esc(p.last_modified ? formatDate(p.last_modified) : '')}</td>
+                </tr>`;
+            }
+            html += `</tbody></table></div></div>`;
         }
-        html += '</div>';
+
+        if (noSessions.length) {
+            html += `<div class="card" style="margin-top:1.5rem">
+                <div class="card-header">
+                    <h2 class="card-title">Projects without Sessions</h2>
+                    <p class="text-muted text-sm">${noSessions.length} project${noSessions.length !== 1 ? 's' : ''} with no sessions found</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">These projects may have no recorded sessions yet.</div>
+                    <table class="table">
+                        <thead><tr><th>Project</th><th>Sessions</th><th>Last Modified</th></tr></thead>
+                        <tbody>`;
+            for (const p of noSessions) {
+                html += `<tr>
+                    <td><span class="text-muted">${esc(p.display_name || p.name)}</span></td>
+                    <td><span class="text-muted">0</span></td>
+                    <td>${esc(p.last_modified ? formatDate(p.last_modified) : '')}</td>
+                </tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
 
         smoothSet(content, html);
     } catch (e) {
         _loadingBar.done();
-        content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+        smoothSet(content, `<div class="loading"><p class="text-danger">Failed to load projects.</p></div>`);
     }
 }
 
@@ -235,8 +291,9 @@ async function showProjects() {
 async function showWorkspace(projectName, selectedSessionId) {
     currentProject = projectName;
     setHamburgerVisible(true);
+    setWorkspaceMode(true);
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="loading">Loading sessions...</div>';
+    content.innerHTML = '<div style="padding:2rem"><div class="loading"><div class="spinner"></div><p>Loading sessions...</p></div></div>';
     _loadingBar.start();
 
     try {
@@ -269,40 +326,46 @@ async function showWorkspace(projectName, selectedSessionId) {
 
         // Build sidebar
         let sidebar = `<div class="sidebar-header">
-            <a class="back-link" href="#" onclick="showProjects();return false;">&larr; Back to Projects</a>
+            <a class="btn btn-ghost btn-sm back-link" href="#" onclick="showProjects();return false;" style="padding:0.25rem 0;font-size:0.82rem">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                Back to Projects
+            </a>
         </div>`;
-        sidebar += `<div class="sidebar-header">Conversations (${cachedSessions.length})</div>`;
+        sidebar += `<div class="sidebar-header" style="border-bottom:none;padding-bottom:0.25rem">Conversations <span class="text-sm text-muted" style="font-weight:400">(${cachedSessions.length})</span></div>`;
+        sidebar += '<div class="sidebar-body">';
 
         const dates = Object.keys(byDate).sort().reverse();
         for (const date of dates) {
             sidebar += `<div class="date-label">${esc(date)}</div>`;
             for (const s of byDate[date]) {
                 const title = s.title || s.id;
-                const ts = formatTs(s.last_timestamp || s.first_timestamp || '');
+                const ts = formatDate(s.last_timestamp || s.first_timestamp || '');
                 const models = (s.models || []).join(', ');
                 const isActive = s.id === selectedSessionId ? ' active' : '';
                 const errorClass = s.error ? ' sidebar-item-error' : '';
                 const errorDetail = s.error_detail ? `<div class="error-detail">${esc(s.error_detail)}</div>` : '';
-                sidebar += `<div class="sidebar-item${isActive}${errorClass}" onclick="selectSession('${esc(projectName)}','${esc(s.id)}')" id="sidebar-${s.id}">
-                    <div class="title">${esc(title)}</div>
+                const modelBadge = models ? `<span style="font-size:0.65rem;opacity:0.6;display:block;margin-top:1px">${esc(models)}</span>` : '';
+                sidebar += `<button class="sidebar-item${isActive}${errorClass}" onclick="selectSession('${esc(projectName)}','${esc(s.id)}')" id="sidebar-${s.id}">
+                    <div class="sidebar-item-title">${esc(title)}</div>
                     ${errorDetail}
-                    <div class="meta">${esc(ts)}<br>${esc(models)}</div>
-                </div>`;
+                    <div class="sidebar-item-time">${esc(ts)}${modelBadge}</div>
+                </button>`;
             }
         }
+        sidebar += '</div>'; // close sidebar-body
 
         // Build layout
         let html = `<div class="workspace-layout">
             <div class="sidebar" id="sidebar">${sidebar}</div>
             <div class="main-panel" id="main-panel">`;
 
-        // Project info card
+        // Project info
         html += `<div class="project-info">
             <h2>${esc(prettyName)}</h2>
-            <span class="meta">${cachedSessions.length} conversation${cachedSessions.length !== 1 ? 's' : ''}</span>
+            <p class="text-sm text-muted">${cachedSessions.length} session${cachedSessions.length !== 1 ? 's' : ''}</p>
         </div>`;
 
-        html += '<div id="session-content"></div></div></div>';
+        html += '<div id="session-content"><div class="card" style="margin:1.5rem;padding:2rem;text-align:center"><p class="text-muted">No session selected</p></div></div></div></div>';
         smoothSet(content, html);
         _loadingBar.done();
 
@@ -381,13 +444,19 @@ async function loadSession(projectName, sessionId) {
                 <div class="stat-badges">${badges}</div>
             </div>
             <div class="btn-group">
-                <button class="btn btn-outline btn-sm" onclick="copyAll()">Copy All</button>
-                <button class="btn btn-outline btn-sm" onclick="downloadSession('${esc(projectName)}','${sessionId}')">Download</button>
+                <button class="btn btn-outline btn-sm" onclick="copyAll()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy All
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="downloadSession('${esc(projectName)}','${sessionId}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download
+                </button>
             </div>
         </div>`;
 
         // Messages (chronological: old to new)
-        html += '<div class="messages-container">';
+        html += '<div class="chat-bubbles">';
         for (const msg of session.messages) {
             if (msg.role === 'user') html += renderUser(msg);
             else if (msg.role === 'assistant') html += renderAssistant(msg);
@@ -397,9 +466,14 @@ async function loadSession(projectName, sessionId) {
 
         smoothSet(container, html);
         _loadingBar.done();
+
+        // Syntax-highlight code blocks
+        container.querySelectorAll('pre code').forEach(block => {
+            if (typeof hljs !== 'undefined') hljs.highlightElement(block);
+        });
     } catch (e) {
         _loadingBar.done();
-        container.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+        container.innerHTML = `<div class="chat-bubbles"><div class="bubble bubble-system">Error: ${esc(e.message)}</div></div>`;
     }
 }
 
@@ -410,28 +484,21 @@ function renderUser(msg) {
     const hasImages = msg.images && msg.images.length > 0;
     const hasToolResult = msg.tool_result_parsed;
 
-    // Skip messages with no visible content
     if (!hasText && !hasImages && !hasToolResult) return '';
 
-    // Tool result messages: only render if they have meaningful expandable content
-    // (bash stdout/stderr, todo items, user Q&A). Skip summary-only results like
-    // "Glob: 0 files found" since the tool call already shows what happened.
     if (hasToolResult && !hasText && !hasImages) {
-        if (_toolResultHasBody(msg.tool_result_parsed)) {
-            return renderToolResult(msg.tool_result_parsed);
-        }
+        if (_toolResultHasBody(msg.tool_result_parsed)) return renderToolResult(msg.tool_result_parsed);
         return '';
     }
 
-    let html = `<div class="message user">`;
-    html += `<span class="role-badge user-badge">You</span>`;
-    if (msg.timestamp) html += ` <span class="msg-meta">${formatTs(msg.timestamp)}</span>`;
+    let html = `<div class="bubble bubble-user">`;
+    html += `<div class="bubble-header"><span class="badge">You</span><span class="text-sm text-muted">${msg.timestamp ? formatDate(msg.timestamp) : ''}</span></div>`;
     if (hasImages) {
         for (const img of msg.images) {
             html += `<div class="msg-image"><img src="data:${esc(img.media_type)};base64,${img.data}" alt="User image" loading="lazy"></div>`;
         }
     }
-    if (hasText) html += `<div class="content">${escContent(msg.text)}</div>`;
+    if (hasText) html += `<div class="bubble-text prose">${renderMarkdown(cleanContent(msg.text))}</div>`;
     if (hasToolResult) html += renderToolResult(msg.tool_result_parsed);
     html += '</div>';
     return html;
@@ -442,20 +509,21 @@ function renderAssistant(msg) {
     const hasThinking = msg.thinking && msg.thinking.trim();
     const hasTools = msg.tool_uses && msg.tool_uses.length > 0;
     if (!hasText && !hasThinking && !hasTools) return '';
-    let html = `<div class="message assistant">`;
-    html += `<span class="role-badge assistant-badge">Assistant</span>`;
 
+    let html = `<div class="bubble bubble-ai">`;
+    html += `<div class="bubble-header"><span class="badge badge-secondary">AI</span><span class="text-sm text-muted">${msg.timestamp ? formatDate(msg.timestamp) : ''}</span></div>`;
+
+    // Per-message metadata
     let metaParts = [];
-    if (msg.model && msg.model !== '<synthetic>') metaParts.push(msg.model);
+    if (msg.model && msg.model !== '<synthetic>') metaParts.push(esc(msg.model));
     if (msg.usage && msg.usage.output_tokens) metaParts.push(`${msg.usage.output_tokens.toLocaleString()} tokens`);
-    if (msg.timestamp) metaParts.push(formatTs(msg.timestamp));
-    if (metaParts.length) html += ` <span class="msg-meta">${metaParts.map(esc).join(' &bull; ')}</span>`;
+    if (metaParts.length) html += `<div class="bubble-meta">${metaParts.join(' &bull; ')}</div>`;
 
-    if (msg.thinking) {
-        html += `<details class="thinking-block"><summary>Thinking</summary><div class="content">${escContent(msg.thinking)}</div></details>`;
+    if (hasThinking) {
+        html += `<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${esc(msg.thinking)}</div></details>`;
     }
-    if (msg.text) html += `<div class="content">${escContent(msg.text)}</div>`;
-    if (msg.tool_uses) {
+    if (hasText) html += `<div class="bubble-text prose">${renderMarkdown(cleanContent(msg.text))}</div>`;
+    if (hasTools) {
         for (const tool of msg.tool_uses) html += renderToolUse(tool);
     }
     html += '</div>';
@@ -464,10 +532,10 @@ function renderAssistant(msg) {
 
 function renderSystem(msg) {
     if (msg.subtype === 'compact_boundary') {
-        return '<div class="message system"><em>--- Context compacted ---</em></div>';
+        return '<div class="bubble bubble-system"><em>--- Context compacted ---</em></div>';
     }
     if (msg.content) {
-        return `<div class="message system">${esc(msg.content)}</div>`;
+        return `<div class="bubble bubble-system">${esc(msg.content)}</div>`;
     }
     return '';
 }
@@ -615,14 +683,22 @@ function renderToolResult(parsed) {
 
 function showSearchPage() {
     setHamburgerVisible(false);
+    setWorkspaceMode(false);
     window.location.hash = '#search';
     const content = document.getElementById('content');
     content.innerHTML = `
         <div class="search-page">
-            <a class="back-link" href="#" onclick="history.back();return false;">&larr; Back</a>
-            <h1>Search</h1><br>
-            <input type="text" id="search-input" placeholder="Search conversations..." autofocus
-                   onkeydown="if(event.key==='Enter') doSearch()">
+            <a class="back-link" href="#" onclick="showProjects();return false;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                Back to Projects
+            </a>
+            <br><br>
+            <h1>Search</h1>
+            <div class="search-bar">
+                <input class="input" type="text" id="search-input" placeholder="Search conversations..." autofocus
+                       onkeydown="if(event.key==='Enter') doSearch()">
+                <button class="btn btn-primary" onclick="doSearch()">Search</button>
+            </div>
             <div id="search-results"></div>
         </div>`;
     document.getElementById('search-input').focus();
@@ -742,6 +818,12 @@ function applyTheme(theme) {
         moon.style.display = theme === 'dark' ? 'block' : 'none';
         sun.style.display = theme === 'light' ? 'block' : 'none';
     }
+    const hljsLink = document.getElementById('hljs-theme');
+    if (hljsLink) {
+        hljsLink.href = theme === 'dark'
+            ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css'
+            : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+    }
 }
 
 function toggleTheme() {
@@ -756,30 +838,30 @@ function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function escContent(s) {
-    // Strip Claude Code internal system tags before rendering
+// Strip Claude Code internal XML noise before markdown rendering
+function cleanContent(s) {
+    if (!s) return '';
     let text = s;
-    // Remove system-reminder blocks entirely (internal noise)
     text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
-    // Remove user-prompt-submit-hook blocks
     text = text.replace(/<user-prompt-submit-hook>[\s\S]*?<\/user-prompt-submit-hook>/g, '');
-    // Remove claude_background_info, fast_mode_info, env blocks
     text = text.replace(/<claude_background_info>[\s\S]*?<\/claude_background_info>/g, '');
     text = text.replace(/<fast_mode_info>[\s\S]*?<\/fast_mode_info>/g, '');
     text = text.replace(/<env>[\s\S]*?<\/env>/g, '');
-    // Remove ide_opened_file blocks (IDE noise)
     text = text.replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/g, '');
-    // Convert ide_selection to a fenced block
     text = text.replace(/<ide_selection>([\s\S]*?)<\/ide_selection>/g, '```\n$1\n```');
-    // Convert local-command-stdout/stderr to fenced blocks
     text = text.replace(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/g, '```\n$1\n```');
     text = text.replace(/<local-command-stderr>([\s\S]*?)<\/local-command-stderr>/g, '```\n$1\n```');
-    // Strip any remaining known Claude Code tags (opening and closing)
     text = text.replace(/<\/?(command-name|antml:[a-z_]+|function_calls|example[^>]*)>/g, '');
-    // Clean up excess blank lines left after stripping
     text = text.replace(/\n{3,}/g, '\n\n');
-    text = text.trim();
+    return text.trim();
+}
 
+function renderMarkdown(text) {
+    if (!text) return '';
+    if (typeof marked !== 'undefined') {
+        try { return marked.parse(text, { breaks: true, gfm: true }); } catch(e) {}
+    }
+    // Fallback: escape + basic code block conversion
     let out = esc(text);
     out = out.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
