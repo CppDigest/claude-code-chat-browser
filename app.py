@@ -1,4 +1,4 @@
-"""Flask web application for browsing Claude Code chat history."""
+"""Flask app that serves the web GUI for browsing sessions."""
 
 import os
 
@@ -30,11 +30,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Claude Code Chat Browser")
-    parser.add_argument("--port", type=int, default=3000)
+    parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--base-dir", default=None, help="Override Claude projects dir")
     args = parser.parse_args()
 
     app = create_app(base_dir=args.base_dir)
     print(f"Claude Code Chat Browser running at http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=True)
+    app.run(host=args.host, port=args.port, debug=True, use_reloader=False)

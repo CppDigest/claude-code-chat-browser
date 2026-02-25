@@ -1,11 +1,22 @@
-"""OS-aware detection of Claude Code session storage path."""
+"""Finds where Claude Code stores its .jsonl session files on disk and
+lists projects/sessions from that directory."""
 
 import os
 import platform
 
 
+def safe_join(base: str, *parts: str) -> str:
+    """Join path components and verify the result stays under base.
+    Raises ValueError if the resolved path escapes the base directory."""
+    joined = os.path.realpath(os.path.join(base, *parts))
+    base_resolved = os.path.realpath(base)
+    if not joined.startswith(base_resolved + os.sep) and joined != base_resolved:
+        raise ValueError(f"Path escapes base directory: {joined}")
+    return joined
+
+
 def get_claude_projects_dir() -> str:
-    """Return the path to ~/.claude/projects/ for the current OS."""
+    """~/.claude/projects/ -- handles Windows USERPROFILE vs Unix HOME."""
     system = platform.system()
     if system == "Windows":
         home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
@@ -15,7 +26,7 @@ def get_claude_projects_dir() -> str:
 
 
 def list_projects(base_dir: str | None = None) -> list[dict]:
-    """List all projects that have JSONL session files."""
+    """Scan the projects dir and return info for each one that has .jsonl files."""
     base = base_dir or get_claude_projects_dir()
     if not os.path.isdir(base):
         return []
@@ -59,7 +70,8 @@ def list_projects(base_dir: str | None = None) -> list[dict]:
 
 
 def _get_display_name(jsonl_path: str, fallback: str) -> str:
-    """Read the cwd from the first user entry in a JSONL file to get the real path."""
+    """Peek at the first entry's cwd field to get a human-readable project path
+    instead of the hashed directory name."""
     import json
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
@@ -72,14 +84,16 @@ def _get_display_name(jsonl_path: str, fallback: str) -> str:
                 if cwd:
                     # Normalize: replace backslashes, strip trailing slash
                     cwd = cwd.replace("\\", "/").rstrip("/")
-                    return cwd
+                    # Extract last folder name and capitalize first letter
+                    folder = cwd.rsplit("/", 1)[-1]
+                    return folder[:1].upper() + folder[1:] if folder else cwd
     except Exception:
         pass
     return fallback
 
 
 def list_sessions(project_dir: str) -> list[dict]:
-    """List all JSONL session files in a project directory."""
+    """Return id, path, size, mtime for each .jsonl file in a project dir."""
     sessions = []
     if not os.path.isdir(project_dir):
         return sessions
