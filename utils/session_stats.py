@@ -119,8 +119,8 @@ def _estimate_cost(messages: list, meta: dict) -> float | None:
             continue
         model = msg.get("model", "")
         usage = msg.get("usage", {})
-        inp = usage.get("input_tokens", 0)
-        out = usage.get("output_tokens", 0)
+        inp = usage.get("input_tokens") or 0
+        out = usage.get("output_tokens") or 0
         if not (inp or out):
             continue
 

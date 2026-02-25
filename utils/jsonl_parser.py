@@ -180,21 +180,21 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
         metadata["api_errors"] += 1
 
     usage = msg.get("usage", {})
-    metadata["total_input_tokens"] += usage.get("input_tokens", 0)
-    metadata["total_output_tokens"] += usage.get("output_tokens", 0)
-    metadata["total_cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
-    metadata["total_cache_creation_tokens"] += usage.get(
-        "cache_creation_input_tokens", 0
+    metadata["total_input_tokens"] += usage.get("input_tokens") or 0
+    metadata["total_output_tokens"] += usage.get("output_tokens") or 0
+    metadata["total_cache_read_tokens"] += usage.get("cache_read_input_tokens") or 0
+    metadata["total_cache_creation_tokens"] += (
+        usage.get("cache_creation_input_tokens") or 0
     )
 
     # Extended cache metrics
     cache_creation = usage.get("cache_creation", {})
     if isinstance(cache_creation, dict):
-        metadata["total_ephemeral_5m_tokens"] += cache_creation.get(
-            "ephemeral_5m_input_tokens", 0
+        metadata["total_ephemeral_5m_tokens"] += (
+            cache_creation.get("ephemeral_5m_input_tokens") or 0
         )
-        metadata["total_ephemeral_1h_tokens"] += cache_creation.get(
-            "ephemeral_1h_input_tokens", 0
+        metadata["total_ephemeral_1h_tokens"] += (
+            cache_creation.get("ephemeral_1h_input_tokens") or 0
         )
 
     # Service tier
@@ -249,10 +249,10 @@ def _process_assistant(entry: dict, messages: list, metadata: dict):
         "is_sidechain": entry.get("isSidechain", False),
         "is_api_error": entry.get("isApiErrorMessage", False),
         "usage": {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "cache_read": usage.get("cache_read_input_tokens", 0),
-            "cache_creation": usage.get("cache_creation_input_tokens", 0),
+            "input_tokens": usage.get("input_tokens") or 0,
+            "output_tokens": usage.get("output_tokens") or 0,
+            "cache_read": usage.get("cache_read_input_tokens") or 0,
+            "cache_creation": usage.get("cache_creation_input_tokens") or 0,
             "service_tier": usage.get("service_tier"),
         },
     })
