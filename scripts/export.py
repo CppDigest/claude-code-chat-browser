@@ -370,21 +370,22 @@ def cmd_export(args):
                 )
                 meta["first_timestamp"] = ts
             date_str = ts[:10]
-            title_slug = _slugify(session["title"])[:60]
+            ts_file = ts[:19].replace(":", "-")   # 2026-02-10T01-46-15
+            title_slug = _slugify(session["title"])
             short_id = sid[:8]
             project_slug = _slugify(project["name"])
 
             if fmt in ("md", "both"):
                 md = session_to_markdown(session, stats)
                 rel_path = os.path.join(
-                    date_str, project_slug, f"{title_slug}__{short_id}.md"
+                    date_str, project_slug, f"{ts_file}__{title_slug}__{short_id}.md"
                 )
                 all_exports.append((rel_path, md))
 
             if fmt in ("json", "both"):
                 js = session_to_json(session, stats)
                 rel_path = os.path.join(
-                    date_str, project_slug, f"{title_slug}__{short_id}.json"
+                    date_str, project_slug, f"{ts_file}__{title_slug}__{short_id}.json"
                 )
                 all_exports.append((rel_path, js))
 
@@ -448,16 +449,18 @@ def cmd_export(args):
 
 def _export_single(session: dict, stats: dict, fmt: str, out_dir: str):
     """Write one session to disk as md, json, or both."""
-    title_slug = _slugify(session["title"])[:60]
+    title_slug = _slugify(session["title"])
     short_id = session["session_id"][:8]
+    ts = session["metadata"].get("first_timestamp", "")
+    ts_file = ts[:19].replace(":", "-") if ts else "0000-00-00T00-00-00"
 
     files = []
     if fmt in ("md", "both"):
         md = session_to_markdown(session, stats)
-        files.append((f"{title_slug}__{short_id}.md", md))
+        files.append((f"{ts_file}__{title_slug}__{short_id}.md", md))
     if fmt in ("json", "both"):
         js = session_to_json(session, stats)
-        files.append((f"{title_slug}__{short_id}.json", js))
+        files.append((f"{ts_file}__{title_slug}__{short_id}.json", js))
 
     os.makedirs(out_dir, exist_ok=True)
     for fname, content in files:

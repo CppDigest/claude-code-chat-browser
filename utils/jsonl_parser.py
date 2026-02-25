@@ -363,9 +363,11 @@ def _parse_tool_result(tool_result, slug: str = None) -> dict | None:
         tool_result.get("filenames"), list
     ):
         result["result_type"] = "glob"
-        result["num_files"] = tool_result.get("numFiles", len(tool_result["filenames"]))
+        filenames = tool_result["filenames"]
+        result["num_files"] = tool_result.get("numFiles", len(filenames))
         result["truncated"] = tool_result.get("truncated", False)
         result["duration_ms"] = tool_result.get("durationMs")
+        result["filenames"] = filenames
         return result
 
     # Grep results: have mode + numFiles/numLines
@@ -375,13 +377,20 @@ def _parse_tool_result(tool_result, slug: str = None) -> dict | None:
         result["num_files"] = tool_result.get("numFiles", 0)
         result["num_lines"] = tool_result.get("numLines", 0)
         result["duration_ms"] = tool_result.get("durationMs")
+        content = tool_result.get("content", "")
+        if content and isinstance(content, str):
+            result["content"] = content
         return result
 
     # Read result: have file dict with content
     if "file" in tool_result and isinstance(tool_result["file"], dict):
+        file_obj = tool_result["file"]
         result["result_type"] = "file_read"
-        result["file_path"] = tool_result["file"].get("filePath", "")
-        result["num_lines"] = tool_result["file"].get("numLines")
+        result["file_path"] = file_obj.get("filePath", "")
+        result["num_lines"] = file_obj.get("numLines")
+        content = file_obj.get("content", "")
+        if content and isinstance(content, str):
+            result["content"] = content
         return result
 
     # WebSearch results

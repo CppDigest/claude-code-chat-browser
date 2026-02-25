@@ -32,6 +32,8 @@ def _build_frontmatter(session: dict) -> str:
     lines.append(f"total_input_tokens: {meta['total_input_tokens']}")
     lines.append(f"total_output_tokens: {meta['total_output_tokens']}")
     lines.append(f"total_cache_read_tokens: {meta['total_cache_read_tokens']}")
+    if meta.get("total_cache_creation_tokens", 0) > 0:
+        lines.append(f"total_cache_creation_tokens: {meta['total_cache_creation_tokens']}")
     lines.append(f"total_tool_calls: {meta['total_tool_calls']}")
     if meta["tool_call_counts"]:
         lines.append("tool_call_breakdown:")
@@ -129,20 +131,18 @@ def _build_summary(session: dict, stats: dict) -> str:
         lines.append("| Action | File |")
         lines.append("|--------|------|")
         for fp in created_files:
-            lines.append(f"| Create | `{_truncate(fp, 100)}` |")
+            lines.append(f"| Create | `{fp}` |")
         for fp in written_files:
-            lines.append(f"| Edit | `{_truncate(fp, 100)}` |")
-        for fp in read_files[:20]:
-            lines.append(f"| Read | `{_truncate(fp, 100)}` |")
-        if len(read_files) > 20:
-            lines.append(f"| Read | _...and {len(read_files) - 20} more_ |")
+            lines.append(f"| Edit | `{fp}` |")
+        for fp in read_files:
+            lines.append(f"| Read | `{fp}` |")
         lines.append("")
 
     # Commands run
     commands = stats.get("commands_run", [])
     if commands:
         lines.append("### Commands Run\n")
-        for i, cmd in enumerate(commands[:30], 1):
+        for i, cmd in enumerate(commands, 1):
             status = ""
             if cmd.get("is_error"):
                 status = " -- **error**"
@@ -152,19 +152,15 @@ def _build_summary(session: dict, stats: dict) -> str:
                 status = " -- success"
             elif cmd.get("return_code_interpretation"):
                 status = f" -- {cmd['return_code_interpretation']}"
-            lines.append(f"{i}. `{_truncate(cmd['command'], 120)}`{status}")
-        if len(commands) > 30:
-            lines.append(f"\n_...and {len(commands) - 30} more commands_")
+            lines.append(f"{i}. `{cmd['command']}`{status}")
         lines.append("")
 
     # URLs accessed
     urls = stats.get("urls_accessed", [])
     if urls:
         lines.append("### URLs Accessed\n")
-        for url in urls[:15]:
-            lines.append(f"- `{_truncate(url, 150)}`")
-        if len(urls) > 15:
-            lines.append(f"- _...and {len(urls) - 15} more_")
+        for url in urls:
+            lines.append(f"- `{url}`")
         lines.append("")
 
     # Tool result summary
@@ -221,7 +217,7 @@ def _render_user(msg: dict) -> str:
         tr = msg["tool_result"]
         if isinstance(tr, dict):
             lines.append("\n**Tool Result:**")
-            lines.append(f"```\n{_truncate(str(tr), 2000)}\n```")
+            lines.append(f"```\n{str(tr)}\n```")
 
     lines.append("\n---\n")
     return "\n".join(lines)
@@ -281,16 +277,16 @@ def _render_tool_use(tool: dict) -> str:
         fp = inp.get("file_path", "")
         content = inp.get("content", "")
         lines.append(f">\n> File: `{fp}`")
-        lines.append(f">\n> ```\n> {_truncate(content, 500)}\n> ```")
+        lines.append(f">\n> ```\n> {content}\n> ```")
     elif name == "Edit":
         fp = inp.get("file_path", "")
         old = inp.get("old_string", "")
         new = inp.get("new_string", "")
         lines.append(f">\n> File: `{fp}`")
         if old:
-            lines.append(f">\n> Old:\n> ```\n> {_truncate(old, 300)}\n> ```")
+            lines.append(f">\n> Old:\n> ```\n> {old}\n> ```")
         if new:
-            lines.append(f">\n> New:\n> ```\n> {_truncate(new, 300)}\n> ```")
+            lines.append(f">\n> New:\n> ```\n> {new}\n> ```")
     elif name == "Glob":
         lines.append(f">\n> Pattern: `{inp.get('pattern', '')}`")
         if inp.get("path"):
@@ -305,7 +301,7 @@ def _render_tool_use(tool: dict) -> str:
         lines.append(f">\n> Description: {inp.get('description', '')}")
         lines.append(f"> Agent: {inp.get('subagent_type', '')}")
         if inp.get("prompt"):
-            lines.append(f">\n> **Prompt:**\n> ```\n> {_truncate(inp['prompt'], 500)}\n> ```")
+            lines.append(f">\n> **Prompt:**\n> ```\n> {inp['prompt']}\n> ```")
     elif name == "TodoWrite":
         todos = inp.get("todos", [])
         for t in todos:
@@ -319,10 +315,7 @@ def _render_tool_use(tool: dict) -> str:
         for q in questions:
             lines.append(f">\n> Q: {q.get('question', '')}")
     else:
-        inp_str = str(inp)
-        if len(inp_str) > 500:
-            inp_str = inp_str[:500] + "..."
-        lines.append(f">\n> Input: `{inp_str}`")
+        lines.append(f">\n> Input: `{str(inp)}`")
 
     return "\n".join(lines)
 
@@ -346,15 +339,18 @@ def _render_tool_result(parsed: dict) -> str:
 
         lines.append(f"\n**Bash Result{status}:**")
         if stdout:
-            lines.append(f"```\n{_truncate(stdout, 2000)}\n```")
+            lines.append(f"```\n{stdout}\n```")
         if stderr:
-            lines.append(f"**stderr:**\n```\n{_truncate(stderr, 1000)}\n```")
+            lines.append(f"**stderr:**\n```\n{stderr}\n```")
 
     elif rt == "file_read":
         fp = parsed.get("file_path", "")
         num_lines = parsed.get("num_lines")
         detail = f" ({num_lines} lines)" if num_lines else ""
         lines.append(f"\n**Read:** `{fp}`{detail}")
+        content = parsed.get("content", "")
+        if content:
+            lines.append(f"```\n{content}\n```")
 
     elif rt == "file_edit":
         fp = parsed.get("file_path", "")
@@ -368,11 +364,18 @@ def _render_tool_result(parsed: dict) -> str:
         n = parsed.get("num_files", 0)
         trunc = " (truncated)" if parsed.get("truncated") else ""
         lines.append(f"\n**Glob:** {n} files found{trunc}")
+        filenames = parsed.get("filenames", [])
+        if filenames:
+            for fn in filenames:
+                lines.append(f"- `{fn}`")
 
     elif rt == "grep":
         n = parsed.get("num_files", 0)
         nl = parsed.get("num_lines", 0)
         lines.append(f"\n**Grep:** {n} files, {nl} lines matched")
+        content = parsed.get("content", "")
+        if content:
+            lines.append(f"```\n{content}\n```")
 
     elif rt == "web_search":
         q = parsed.get("query", "")
@@ -434,10 +437,13 @@ def _render_system(msg: dict) -> str:
 
 
 def _format_ts(ts: str) -> str:
-    """2024-01-15T10:30:00Z -> 2024-01-15 10:30:00"""
+    """2024-01-15T10:30:00.123Z -> 2024-01-15 10:30:00.123 UTC"""
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        ms = dt.microsecond // 1000
+        if ms:
+            return dt.strftime(f"%Y-%m-%d %H:%M:%S.{ms:03d} UTC")
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
     except (ValueError, AttributeError):
         return ts
 
