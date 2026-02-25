@@ -12,14 +12,26 @@ from utils.jsonl_parser import parse_session
 from utils.session_stats import compute_stats
 from utils.md_exporter import session_to_markdown
 from utils.json_exporter import session_to_json
+from utils.exclusion_rules import build_searchable_text, is_excluded_by_rules
 
 export_bp = Blueprint("export", __name__)
+
+
+def _session_text_for_exclusion(session: dict) -> str:
+    """Extract a plain-text snippet from session messages for exclusion matching."""
+    parts = []
+    for msg in session.get("messages", []):
+        text = msg.get("text") or ""
+        if isinstance(text, str) and text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
 @export_bp.route("/api/export", methods=["POST"])
 def bulk_export():
     base = current_app.config.get("CLAUDE_PROJECTS_DIR") or get_claude_projects_dir()
     projects = list_projects(base)
+    rules = current_app.config.get("EXCLUSION_RULES") or []
 
     buf = io.BytesIO()
     count = 0
@@ -32,6 +44,18 @@ def bulk_export():
                     session = parse_session(sess_info["path"])
                     if session["title"] == "Untitled Session":
                         continue
+
+                    if rules:
+                        meta = session["metadata"]
+                        searchable = build_searchable_text(
+                            project_name=project.get("display_name") or project["name"],
+                            session_title=session["title"],
+                            model_names=list(meta.get("models_used") or []),
+                            content_snippet=_session_text_for_exclusion(session),
+                        )
+                        if is_excluded_by_rules(rules, searchable):
+                            continue
+
                     stats = compute_stats(session)
                     md = session_to_markdown(session, stats)
                     title_slug = _slugify(session["title"])[:60] or "session"

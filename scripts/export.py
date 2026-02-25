@@ -28,6 +28,12 @@ from utils.jsonl_parser import parse_session
 from utils.session_stats import compute_stats, _format_duration
 from utils.md_exporter import session_to_markdown
 from utils.json_exporter import session_to_json
+from utils.exclusion_rules import (
+    resolve_exclusion_rules_path,
+    load_rules,
+    build_searchable_text,
+    is_excluded_by_rules,
+)
 
 
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude-code-chat-browser")
@@ -285,11 +291,15 @@ def cmd_export(args):
     project_filter = getattr(args, "project", None)
     fmt = getattr(args, "format", None) or "md"
     session_filter = getattr(args, "session", None)
+    exclusion_rules_path = getattr(args, "exclude_rules", None)
 
     if not os.path.isdir(base_dir):
         _die(f"Claude Code projects directory not found: {base_dir}")
 
-    last_export = _load_state() if since == "last" else {}
+    rules = load_rules(resolve_exclusion_rules_path(exclusion_rules_path))
+
+    state = _load_state() if since == "last" else {}
+    last_export = state.get("sessions", {})
 
     # Single session export
     if session_filter:
@@ -337,6 +347,18 @@ def cmd_export(args):
             if session["title"] == "Untitled Session":
                 skipped += 1
                 continue
+
+            if rules:
+                meta = session["metadata"]
+                searchable = build_searchable_text(
+                    project_name=project.get("display_name") or project["name"],
+                    session_title=session["title"],
+                    model_names=list(meta.get("models_used") or []),
+                    content_snippet=_session_text_for_exclusion(session),
+                )
+                if is_excluded_by_rules(rules, searchable):
+                    skipped += 1
+                    continue
 
             stats = compute_stats(session)
             meta = session["metadata"]
@@ -420,8 +442,8 @@ def cmd_export(args):
             zf.writestr("manifest.jsonl", manifest_str)
         print(f"Exported {exported} file(s) to {zip_path}")
 
-    _save_state(last_export)
-    print("Export state saved.")
+    _save_state(last_export, count=len(manifest), out_dir=out_dir)
+    print(f"State saved to {STATE_FILE}")
 
 
 def _export_single(session: dict, stats: dict, fmt: str, out_dir: str):
@@ -443,6 +465,19 @@ def _export_single(session: dict, stats: dict, fmt: str, out_dir: str):
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"Exported: {fpath}")
+
+
+# ==================== Helpers ====================
+
+
+def _session_text_for_exclusion(session: dict) -> str:
+    """Extract plain text from all session messages for exclusion rule matching."""
+    parts = []
+    for msg in session.get("messages", []):
+        text = msg.get("text") or ""
+        if isinstance(text, str) and text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
 # ==================== Argument Parser ====================
@@ -469,6 +504,14 @@ def build_parser() -> argparse.ArgumentParser:
                         default=None, help="Export format (default: md)")
     parser.add_argument("--session", default=None,
                         help="Export/stats for single session (UUID prefix)")
+    parser.add_argument(
+        "--exclude-rules", "-e",
+        default=None,
+        metavar="PATH",
+        dest="exclude_rules",
+        help="Path to exclusion rules file (sensitive sessions are omitted). "
+             "If omitted, uses ~/.claude-code-chat-browser/exclusion-rules.txt if present.",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -506,11 +549,16 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Filter by project name")
     export_p.add_argument("--base-dir", default=None,
                           help="Override Claude Code projects directory")
+    export_p.add_argument(
+        "--exclude-rules", "-e",
+        default=None,
+        metavar="PATH",
+        dest="exclude_rules",
+        help="Path to exclusion rules file (sensitive sessions are omitted). "
+             "If omitted, uses ~/.claude-code-chat-browser/exclusion-rules.txt if present.",
+    )
 
     return parser
-
-
-# ==================== Helpers ====================
 
 
 def _find_session(session_id: str, base_dir: str) -> str | None:
@@ -534,14 +582,41 @@ def _find_session(session_id: str, base_dir: str) -> str | None:
 
 
 def _load_state() -> dict:
-    if os.path.isfile(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return {}
+    """Load export state, migrating legacy flat format to the current schema.
+
+    Current schema::
+
+        {
+            "lastExportTime": "2026-02-25T12:00:00",
+            "exportedCount": 42,
+            "exportDir": "/path/to/out",
+            "sessions": {"<session-uuid>": <mtime-float>, ...}
+        }
+
+    Legacy schema (written by older versions)::
+
+        {"<session-uuid>": <mtime-float>, ...}
+    """
+    if not os.path.isfile(STATE_FILE):
+        return {}
+    with open(STATE_FILE, "r") as f:
+        data = json.load(f)
+    # Migrate: if the file has neither "sessions" nor "lastExportTime" it is
+    # the old flat dict of session_id → mtime.
+    if "sessions" not in data and "lastExportTime" not in data:
+        return {"sessions": data}
+    return data
 
 
-def _save_state(state: dict):
+def _save_state(sessions: dict, count: int, out_dir: str):
+    """Persist export state with standardised fields matching cursor-chat-browser."""
     os.makedirs(STATE_DIR, exist_ok=True)
+    state = {
+        "lastExportTime": datetime.now().isoformat(),
+        "exportedCount": count,
+        "exportDir": out_dir,
+        "sessions": sessions,
+    }
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
