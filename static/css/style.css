@@ -1,6 +1,5 @@
 /* ============================================================
    Claude Code Chat Browser — CSS
-   Palette and components match cursor-chat-browser-python.
    Claude-specific additions (stat badges, toast, confirm,
    loading bar, scroll-top) are in their own sections below.
    ============================================================ */
@@ -162,8 +161,6 @@ a:hover { text-decoration: underline; }
 .footer a { color: var(--text-muted); }
 .footer a:hover { color: var(--text); }
 
-/* Hide footer in workspace mode */
-body.workspace-mode .footer { display: none; }
 
 /* ---------- Typography ---------- */
 h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
@@ -285,42 +282,66 @@ h3 { font-size: 1.15rem; font-weight: 600; }
 /* ---------- Utility ---------- */
 .flex-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 
-/* ---------- Workspace Layout (full-height split) ---------- */
-body.workspace-mode { overflow: hidden; }
-body.workspace-mode #content { padding: 0; max-width: none; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+/* ---------- Workspace Layout ---------- */
+/* Body scrolls naturally; no overflow:hidden trap — footer is always reachable */
 
-.workspace-layout {
+.workspace-top-bar {
   display: flex;
-  flex: 1;
-  height: calc(100vh - 3.5rem);
-  overflow: hidden;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* 2-column grid: fixed sidebar + fluid main panel */
+.workspace-wrap {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 768px) {
+  .workspace-wrap { grid-template-columns: 1fr; }
 }
 
 /* ---------- Sidebar ---------- */
 .sidebar {
-  width: 280px;
-  min-width: 280px;
-  border-right: 1px solid var(--border);
-  background: var(--bg-card);
+  position: sticky;
+  top: 5rem;                          /* below 3.5rem navbar + 1rem gap */
+  max-height: calc(100vh - 7rem);
   overflow-y: auto;
-  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--bg-card);
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 2%,
+    black 98%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 2%,
+    black 98%,
+    transparent 100%
+  );
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
-  mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 98%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 98%, transparent 100%);
 }
 .sidebar::-webkit-scrollbar { width: 6px; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
 
 .sidebar-header {
-  padding: 0.75rem;
   font-size: 0.875rem;
   font-weight: 600;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+  padding: 0 0.25rem;
 }
-
-.sidebar-body { padding: 0.75rem; }
 
 .sidebar-item {
   display: block;
@@ -371,24 +392,23 @@ body.workspace-mode #content { padding: 0; max-width: none; flex: 1; overflow: h
   opacity: 0.6;
 }
 
-/* ---------- Main panel ---------- */
+/* ---------- Main panel — normal document flow, body scrolls ---------- */
 .main-panel {
-  flex: 1;
-  overflow-y: auto;
-  height: 100%;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  min-width: 0;
 }
-.main-panel::-webkit-scrollbar { width: 6px; }
-.main-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* ---------- Project info ---------- */
 .project-info {
   padding: 1.25rem 1.5rem;
   background: var(--bg-muted);
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
 }
 .project-info h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.15rem; }
+
+/* ---------- Session content ---------- */
+.session-content-inner {
+  max-width: 920px;
+}
 
 /* ---------- Panel header ---------- */
 .panel-header {
@@ -904,12 +924,9 @@ pre code { background: none; padding: 0; font-size: inherit; }
   }
   .sidebar.open { transform: translateX(0); }
 
-  .main-panel { width: 100%; }
   .panel-header { flex-direction: column; gap: 0.75rem; }
   .panel-title { font-size: 1rem; }
   .stat-badges { gap: 0.25rem; }
   .stat-badge { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
   .chat-bubbles { padding: 0.75rem; }
-  body.workspace-mode #content { overflow: auto; }
-  .workspace-layout { height: auto; flex-direction: column; }
 }

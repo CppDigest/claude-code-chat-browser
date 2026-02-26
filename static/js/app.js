@@ -71,6 +71,8 @@ let projectDisplayNames = {};
 
 document.addEventListener('DOMContentLoaded', () => {
     applyTheme(localStorage.getItem('theme') || 'dark');
+    const yearEl = document.getElementById('footer-year');
+    if (yearEl) yearEl.textContent = new Date().getFullYear();
     handleRoute();
     window.addEventListener('hashchange', handleRoute);
 
@@ -87,18 +89,13 @@ document.addEventListener('DOMContentLoaded', () => {
     topBtn.id = 'scroll-top-btn';
     topBtn.textContent = '\u2191';
     topBtn.addEventListener('click', () => {
-        const panel = document.querySelector('.main-panel');
-        if (panel && panel.scrollTop > 0) { panel.scrollTo({ top: 0, behavior: 'smooth' }); }
-        else { window.scrollTo({ top: 0, behavior: 'smooth' }); }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     });
     document.body.appendChild(topBtn);
 
     const updateScrollBtn = () => {
-        const panel = document.querySelector('.main-panel');
-        const scrollY = Math.max(panel ? panel.scrollTop : 0, window.scrollY);
-        topBtn.classList.toggle('show', scrollY > 400);
+        topBtn.classList.toggle('show', window.scrollY > 400);
     };
-    window.addEventListener('scroll', updateScrollBtn, true);
     window.addEventListener('scroll', updateScrollBtn);
 });
 
@@ -123,15 +120,8 @@ function setHamburgerVisible(visible) {
 }
 
 function setWorkspaceMode(active) {
+    // No container class change needed — workspace lives inside the standard container
     document.body.classList.toggle('workspace-mode', active);
-    const content = document.getElementById('content');
-    if (content) {
-        if (active) {
-            content.classList.remove('container');
-        } else {
-            content.classList.add('container');
-        }
-    }
     // Switch highlight.js theme
     const hljsLink = document.getElementById('hljs-theme');
     if (hljsLink) {
@@ -146,6 +136,7 @@ let _navInProgress = false;
 
 function handleRoute() {
     if (_navInProgress) return;
+    window.scrollTo(0, 0);
     const hash = window.location.hash || '#';
     if (hash.startsWith('#project/')) {
         const parts = hash.slice(9);
@@ -205,26 +196,36 @@ async function showProjects() {
 
         // Page header with export controls
         let lastExportHtml = '';
+        let hasPreviousExport = false;
         if (stateRes) {
             try {
                 const state = await stateRes.json();
                 if (state.last_export_time) {
                     const d = new Date(state.last_export_time);
                     if (!isNaN(d.getTime())) {
+                        hasPreviousExport = true;
                         lastExportHtml = `<p class="text-muted text-sm" style="margin:0">Last export: ${d.toLocaleString()} (${state.export_count || 0} sessions)</p>`;
                     }
                 }
             } catch(e) {}
         }
 
+        const sinceBtnHtml = hasPreviousExport
+            ? `<button class="btn btn-primary btn-sm" id="btn-export-since" onclick="bulkExport('last')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export new since last
+              </button>`
+            : '';
+
         let html = `<div class="page-header">
             <div>
                 <h1>Projects</h1>
                 <p class="text-muted">Browse your Claude Code conversations by project. Click on a project to view its sessions.</p>
             </div>
-            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.25rem">
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem">
                 <div class="btn-group">
-                    <button class="btn btn-outline btn-sm" id="btn-export-all" onclick="bulkExport()">
+                    ${sinceBtnHtml}
+                    <button class="btn btn-outline btn-sm" id="btn-export-all" onclick="bulkExport('all')">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         Export all
                     </button>
@@ -324,15 +325,9 @@ async function showWorkspace(projectName, selectedSessionId) {
             byDate[date].push(s);
         }
 
-        // Build sidebar
-        let sidebar = `<div class="sidebar-header">
-            <a class="btn btn-ghost btn-sm back-link" href="#" onclick="showProjects();return false;" style="padding:0.25rem 0;font-size:0.82rem">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-                Back to Projects
-            </a>
-        </div>`;
-        sidebar += `<div class="sidebar-header" style="border-bottom:none;padding-bottom:0.25rem">Conversations <span class="text-sm text-muted" style="font-weight:400">(${cachedSessions.length})</span></div>`;
-        sidebar += '<div class="sidebar-body">';
+        // Build sidebar — no wrapper divs, content sits directly in .sidebar (padding:0.75rem)
+        let sidebar = `<h3 style="margin-bottom:0.5rem;padding:0 0.25rem">Conversations <span class="text-sm text-muted" style="font-weight:400">(${cachedSessions.length})</span></h3>`;
+        sidebar += '<div>';
 
         const dates = Object.keys(byDate).sort().reverse();
         for (const date of dates) {
@@ -354,18 +349,25 @@ async function showWorkspace(projectName, selectedSessionId) {
         }
         sidebar += '</div>'; // close sidebar-body
 
-        // Build layout
-        let html = `<div class="workspace-layout">
-            <div class="sidebar" id="sidebar">${sidebar}</div>
-            <div class="main-panel" id="main-panel">`;
-
-        // Project info
-        html += `<div class="project-info">
+        // Build layout — back bar + project info card + 2-column grid
+        // Body scrolls normally; sidebar is position:sticky; footer is reachable
+        let html = `<div class="workspace-top-bar">
+            <a class="btn btn-ghost btn-sm back-link" href="#" onclick="showProjects();return false;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                Back to Projects
+            </a>
+            <div id="ws-actions" class="btn-group"></div>
+        </div>
+        <div class="project-info card">
             <h2>${esc(prettyName)}</h2>
             <p class="text-sm text-muted">${cachedSessions.length} session${cachedSessions.length !== 1 ? 's' : ''}</p>
+        </div>
+        <div class="workspace-wrap">
+            <div class="sidebar" id="sidebar">${sidebar}</div>
+            <div class="main-panel" id="main-panel">
+                <div id="session-content"><div class="card" style="padding:2rem;text-align:center"><p class="text-muted">No session selected</p></div></div>
+            </div>
         </div>`;
-
-        html += '<div id="session-content"><div class="card" style="margin:1.5rem;padding:2rem;text-align:center"><p class="text-muted">No session selected</p></div></div></div></div>';
         smoothSet(content, html);
         _loadingBar.done();
 
@@ -434,16 +436,10 @@ async function loadSession(projectName, sessionId) {
         if (meta.version) badges += `<span class="stat-badge badge-version">v${esc(meta.version)}</span>`;
         if (meta.permission_mode) badges += `<span class="stat-badge badge-perm">${esc(meta.permission_mode)}</span>`;
 
-        html += `<div class="panel-header">
-            <div class="panel-header-left">
-                <h2 class="panel-title">${esc(session.title)}</h2>
-                <div class="panel-subtitle">
-                    <span class="panel-time">${timeRange}</span>
-                    <span class="panel-msg-count">${msgCount} message${msgCount !== 1 ? 's' : ''}</span>
-                </div>
-                <div class="stat-badges">${badges}</div>
-            </div>
-            <div class="btn-group">
+        // Populate top-bar actions (Copy All + Download) at the workspace header level
+        const wsActions = document.getElementById('ws-actions');
+        if (wsActions) {
+            wsActions.innerHTML = `<div class="btn-group">
                 <button class="btn btn-outline btn-sm" onclick="copyAll()">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     Copy All
@@ -452,6 +448,19 @@ async function loadSession(projectName, sessionId) {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Download
                 </button>
+            </div>`;
+        }
+
+        // Wrap header + bubbles in one card so the box extends to the bottom of the chat
+        html += `<div class="card">
+        <div class="panel-header">
+            <div class="panel-header-left">
+                <h2 class="panel-title">${esc(session.title)}</h2>
+                <div class="panel-subtitle">
+                    <span class="panel-time">${timeRange}</span>
+                    <span class="panel-msg-count">${msgCount} message${msgCount !== 1 ? 's' : ''}</span>
+                </div>
+                <div class="stat-badges">${badges}</div>
             </div>
         </div>`;
 
@@ -462,9 +471,9 @@ async function loadSession(projectName, sessionId) {
             else if (msg.role === 'assistant') html += renderAssistant(msg);
             else if (msg.role === 'system') html += renderSystem(msg);
         }
-        html += '</div>';
+        html += '</div></div>'; // close .chat-bubbles and .card
 
-        smoothSet(container, html);
+        smoothSet(container, `<div class="session-content-inner">${html}</div>`);
         _loadingBar.done();
 
         // Syntax-highlight code blocks
@@ -737,22 +746,31 @@ async function doSearch() {
 
 // ==================== Export ====================
 
-function bulkExport() {
-    showConfirm('Export all sessions as a zip file?', async () => {
-        const fname = `claude-code-export-${new Date().toISOString().slice(0, 10)}.zip`;
+function bulkExport(since = 'all') {
+    const label = since === 'last' ? 'Export new sessions since last export?' : 'Export all sessions as a zip file?';
+    showConfirm(label, async () => {
+        const suffix = since === 'last' ? '-since-last' : '';
+        const fname = `claude-code-export${suffix}-${new Date().toISOString().slice(0, 10)}.zip`;
         const handle = await getFileHandle(fname, [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }]);
         if (!handle) return;
-        const btn = document.querySelector('.export-all-btn');
+        const btnId = since === 'last' ? '#btn-export-since' : '#btn-export-all';
+        const btn = document.querySelector(btnId);
+        const origText = btn ? btn.textContent.trim() : '';
         if (btn) { btn.disabled = true; btn.textContent = 'Exporting...'; }
         try {
-            const res = await fetch('/api/export', { method: 'POST' });
+            const res = await fetch('/api/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ since }),
+            });
             if (!res.ok) throw new Error(`Export failed: ${res.status}`);
             const blob = await res.blob();
             await writeToHandle(handle, blob, fname);
+            showProjects(); // Refresh to show updated last-export timestamp
         } catch (e) {
             showToast('Export failed: ' + e.message, 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Export all'; }
+            if (btn) { btn.disabled = false; btn.textContent = origText; }
         }
     });
 }
