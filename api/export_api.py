@@ -165,6 +165,18 @@ def export_session(project_name, session_id):
 
     fmt = request.args.get("format", "md")
     session = parse_session(filepath)
+    rules = current_app.config.get("EXCLUSION_RULES") or []
+    if rules:
+        meta = session["metadata"]
+        text_parts = [msg.get("text") or "" for msg in session.get("messages", []) if msg.get("text")]
+        searchable = build_searchable_text(
+            project_name=project_name,
+            session_title=session["title"],
+            model_names=list(meta.get("models_used") or []),
+            content_snippet="\n\n".join(text_parts),
+        )
+        if is_excluded_by_rules(rules, searchable):
+            return jsonify({"error": "Session not found"}), 404
     stats = compute_stats(session)
     title_slug = _slugify(session["title"]) or "session"
 

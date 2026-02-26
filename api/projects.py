@@ -5,6 +5,7 @@ import traceback
 from flask import Blueprint, current_app, jsonify
 
 from utils.session_path import get_claude_projects_dir, list_projects, list_sessions, safe_join
+from utils.exclusion_rules import build_searchable_text, is_excluded_by_rules
 
 projects_bp = Blueprint("projects", __name__)
 
@@ -50,6 +51,7 @@ def get_project_sessions(project_name):
     sessions = list_sessions(project_dir)
     # Add summary preview for each session
     from utils.jsonl_parser import parse_session
+    rules = current_app.config.get("EXCLUSION_RULES") or []
     result = []
     for s in sessions:
         try:
@@ -58,6 +60,16 @@ def get_project_sessions(project_name):
             # Skip untitled sessions (no real conversation)
             if parsed["title"] == "Untitled Session":
                 continue
+            if rules:
+                text_parts = [msg.get("text") or "" for msg in parsed.get("messages", []) if msg.get("text")]
+                searchable = build_searchable_text(
+                    project_name=project_name,
+                    session_title=parsed["title"],
+                    model_names=list(meta.get("models_used") or []),
+                    content_snippet="\n\n".join(text_parts),
+                )
+                if is_excluded_by_rules(rules, searchable):
+                    continue
             result.append({
                 **s,
                 "title": parsed["title"],
